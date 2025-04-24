@@ -37,7 +37,7 @@ const soapResponseBuilder = (data, operation) => {
     }
     else if (operation === "getDataResponse") {
         soapStructure["soap:Envelope"]["soap:Body"]["getDataResponse"] = {
-            data: [JSON.stringify(data)],
+            data: data,
         };
     }
     
