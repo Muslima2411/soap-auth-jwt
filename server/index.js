@@ -1,5 +1,5 @@
 import express from "express";
-import { parseString } from "xml2js";
+import { Builder, parseString } from "xml2js";
 import bodyParser from "body-parser";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -12,52 +12,104 @@ app.use(bodyParser.text({ type: "text/xml" }));
 app.use(cors());
 dotenv.config();
 
-const users = { test: "test123" };
+const users = { test: "test123", test1: "test1234", test2: "test12345" };
+
+const myData = {
+    protectedData: users,
+};
+
+const soapResponseBuilder = (data, operation) => {
+    const builder = new Builder({ headless: true });
+
+    const soapStructure = {
+        "soap:Envelope": {
+            $: {
+                "xmlns:soap": "http://schemas.xmlsoap.org/soap/envelope/",
+            },
+            "soap:Body": {},
+        },
+    };
+
+    if (operation === "loginResponse") {
+        soapStructure["soap:Envelope"]["soap:Body"]["loginResponse"] = {
+            token: [data],
+        };
+    }
+    else if (operation === "getDataResponse") {
+        soapStructure["soap:Envelope"]["soap:Body"]["getDataResponse"] = {
+            data: [JSON.stringify(data)],
+        };
+    }
+    
+    return builder.buildObject(soapStructure);
+};
+
+const soapFaultResponseBuilder = (error) => {
+    const builder = new Builder({ headless: true });
+    const soapStructure = {
+        "soap:Envelope": {
+            $: {
+                "xmlns:soap": "http://schemas.xmlsoap.org/soap/envelope/",
+            },
+            "soap:Fault": {
+                faultcode: ["soap:Server"],
+                faultstring: [error],
+            },
+        },
+    };
+
+    return builder.buildObject(soapStructure);
+};
 
 app.post("/soap", (req, res) => {
     parseString(req.body, (err, result) => {
         if (err) {
-            res.status(400).send("Error parsing XML");
+            res.status(400).send(soapFaultResponseBuilder("Error parsing XML"));
             return;
         }
         const body = result["soap:Envelope"]["soap:Body"];
         const header = result["soap:Envelope"]["soap:Header"];
 
-        const username = header[0].authToken[0].userName[0];
-        const password = header[0].authToken[0].password[0];
-
-
         if (body[0].loginRequest) {
-          
-            if (users[username] !== password) {
-                res.status(403).send({ message: "Invalid credentials" });
+            if (!header || !header[0]?.authToken) {
+                console.warn("[/soap] Missing authentication token");
+                res.status(400).send(soapFaultResponseBuilder("Missing authentication token"));
                 return;
             }
 
-            res.status(200).send({ message: "Login successful" });
-            return;
-        }
+            const username = header[0].authToken[0].userName[0];
+            const password = header[0].authToken[0].password[0];
 
-        if (body[0].getDataRequest) {
-            try {
-                const token = jwt.sign({ username, password }, process.env.JWT_SECRET, { expiresIn: '1h' });
-                res.send({
-                    message: "Request processed successfully",
-                    token,
-                });
-            } catch (error) {
-                console.error("JWT Error:", error.message);
-                res.status(500).send({ message: "Server error generating token" });
+            if (users[username] !== password) {
+                console.warn("Invalid credentials");
+                res.status(403).send(soapFaultResponseBuilder("Invalid credentials"));
+                return;
             }
+            const token = jwt.sign({ username, password }, process.env.JWT_SECRET, { expiresIn: "1h" });
+            res.send(soapResponseBuilder(token, "loginResponse"));
         }
-        
 
+        else if (body[0].getDataRequest) {
+            const token = header[0]?.authToken[0]?.token[0];
+            if (!token) {
+                res.status(401).send(soapFaultResponseBuilder("Missing token"));
+                return;
+            }
+            try{
+                const response = jwt.verify(token, process.env.JWT_SECRET);
+                res.send(soapResponseBuilder(myData, "getDataResponse"));
+            }
+            catch (error) {
+                res.status(403).send(soapFaultResponseBuilder("Invalid token"));
+                return;
+            }
 
-
-
+        }else {
+            res.status(400).send(soapFaultResponseBuilder("Invalid SOAP request"));
+        }
     });
 });
 
 app.listen(PORT, () => {
-    console.log(`server is running on port ${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
 });
